@@ -467,25 +467,20 @@
 
         // --- GEMINI AI EXAM GENERATOR ---
         async function generateExam() {
-            if (!appState.apiKey) {
-                alert("Please enter your Gemini API Key in the sidebar first!");
-                return;
-            }
+    if (!appState.apiKey) {
+        alert("Please enter your Gemini API Key in the sidebar first!");
+        return;
+    }
 
-            const subject = document.getElementById('exam-subject').value;
-            const itemNum = parseInt(document.getElementById('exam-items').value);
+    const subject = document.getElementById('exam-subject').value;
+    const itemNum = parseInt(document.getElementById('exam-items').value);
+    const repetitionTargetCount = Math.round(itemNum * 0.15);
+    const pastMistakes = appState.mistakeBank.slice(0, repetitionTargetCount);
+    const docContext = appState.documents.map(d => `[Source Title: ${d.title}]\n${d.content}`).join("\n\n---\n\n");
 
-            // Fetch past wrong questions to satisfy 10-20% repetition requirement
-            const repetitionTargetCount = Math.round(itemNum * 0.15); // ~15% repetition
-            const pastMistakes = appState.mistakeBank.slice(0, repetitionTargetCount);
+    showLoading(true, "Gemini AI is generating questions based on PRC TOS and uploaded material...");
 
-            // Context from docs
-            const docContext = appState.documents.map(d => `[Source Title: ${d.title}]\n${d.content}`).join("\n\n---\n\n");
-
-            showLoading(true, "Gemini AI is generating questions based on PRC TOS and uploaded material...");
-
-            const prompt = `
-You are an expert examiner for the Philippine Licensure Examination for Agriculturists (LEA).
+    const prompt = `You are an expert examiner for the Philippine Licensure Examination for Agriculturists (LEA).
 Generate a multiple-choice practice exam adhering strictly to PRC Resolution No. 04 Series of 2024 (Table of Specifications).
 
 Exam Specs:
@@ -496,46 +491,57 @@ Exam Specs:
 Uploaded Study Vault Materials (Use these for reference and citations):
 ${docContext || "No custom materials uploaded. Rely strictly on official LEA TOS guidelines."}
 
-Return ONLY a valid JSON array of question objects without markdown block formatting or extra text.
-Each object in the array must follow this structure:
-{
+Return a valid JSON array of question objects following this exact structure:
+[
+  {
     "id": "item_1",
     "subject": "Name of LEA Subject",
     "topic": "Specific TOS competency topic",
-    "question": "Clear multiple choice question text (for computational questions, frame numbers clearly)",
+    "question": "Clear multiple choice question text",
     "options": ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"],
-    "answerIndex": 0, // integer index (0-3) of correct option
-    "explanation": "Detailed explanation. For calculations, provide full formulas formatted in LaTeX like $$Formula$$ step-by-step.",
+    "answerIndex": 0,
+    "explanation": "Detailed explanation with step-by-step formulas where applicable.",
     "citation": "Source document title or PRC TOS Section reference"
-}
-`;
+  }
+]`;
 
-            try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${appState.apiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: prompt }] }]
-                    })
-                });
+    try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${appState.apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json"
+                }
+            })
+        });
 
-                const data = await response.json();
-                const rawText = data.candidates[0].content.parts[0].text;
-                
-                // Clean markdown code blocks if present
-                const cleanedJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-                appState.currentExam = JSON.parse(cleanedJson);
-                appState.currentQuestionIdx = 0;
-                appState.userAnswers = {};
+        const data = await response.json();
 
-                showLoading(false);
-                startExamInterface();
-            } catch (err) {
-                showLoading(false);
-                alert("Error generating exam from Gemini API. Please check your API key or network connection.\n\n" + err.message);
-            }
+        // 1. Check for API error response (invalid key, missing permissions, quota limit)
+        if (data.error) {
+            throw new Error(`Gemini API Error (${data.error.code}): ${data.error.message}`);
         }
 
+        // 2. Validate that candidates exist
+        if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+            throw new Error("No response generated. The prompt may have triggered a safety filter or the API key is restricted.");
+        }
+
+        const rawText = data.candidates[0].content.parts[0].text;
+        const cleanedJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        appState.currentExam = JSON.parse(cleanedJson);
+        appState.currentQuestionIdx = 0;
+        appState.userAnswers = {};
+
+        showLoading(false);
+        startExamInterface();
+    } catch (err) {
+        showLoading(false);
+        alert(`Failed to generate exam:\n\n${err.message}`);
+    }
+}
         // --- EXAM RUNTIME ENGINE ---
         function startExamInterface() {
             document.getElementById('exam-interface').classList.remove('hidden');
